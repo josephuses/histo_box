@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Histogram & Boxplot Connection</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f6f8; display: flex; flex-direction: column; align-items: center; padding: 20px; color: #333; }
+        h2 { color: #2c3e50; margin-bottom: 10px; }
+        
+        .main-container {
+            background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            max-width: 900px; width: 100%;
+        }
+
+        /* Controls Area */
+        .controls-header { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #eee; }
+        
+        .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        
+        button {
+            background: #34495e; color: white; border: none; padding: 8px 16px; border-radius: 4px;
+            font-weight: 600; cursor: pointer; transition: background 0.2s;
+        }
+        button:hover { background: #2c3e50; }
+
+        .slider-container { display: flex; align-items: center; justify-content: space-between; margin: 15px 0; }
+        input[type=range] { flex-grow: 1; margin: 0 20px; cursor: pointer; }
+        .label-txt { font-weight: bold; color: #7f8c8d; font-size: 0.9em; }
+
+        /* Stats readout */
+        .stats-row { display: flex; justify-content: center; gap: 30px; margin-top: 10px; }
+        .stat-box { text-align: center; }
+        .stat-title { display: block; font-size: 0.8em; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; }
+        .stat-value { font-size: 1.3em; font-weight: bold; }
+
+        /* Chart Elements */
+        .bar { fill: #bdc3c7; transition: fill 0.3s; }
+        .bar:hover { fill: #95a5a6; }
+
+        .box { fill: #e3ecfd; stroke: #2c3e50; stroke-width: 2px; }
+        .whisker, .cap { stroke: #2c3e50; stroke-width: 2px; }
+        .median-line-box { stroke: #c0392b; stroke-width: 3px; }
+
+        /* Overlay Lines spanning both charts */
+        .overlay-line { stroke-width: 3px; stroke-dasharray: 5,3; pointer-events: none; opacity: 0.8; }
+        .line-mean { stroke: #3498db; }
+        .line-median { stroke: #c0392b; }
+
+        /* Axis */
+        .axis text { fill: #999; }
+        .axis path, .axis line { stroke: #eee; }
+        .axis-label { font-size: 12px; fill: #7f8c8d; font-weight: bold; }
+
+        .skew-label { font-size: 1.2em; font-weight: bold; color: #2c3e50; }
+    </style>
+</head>
+<body>
+
+    <h2>The Shape & Summary Connection</h2>
+
+    <div class="main-container">
+        
+        <div class="controls-header">
+            <div class="top-row">
+                <div class="skew-label" id="skewDesc">Symmetric (Normal-ish)</div>
+                <button onclick="update(true)">↻ Reset / New Random Data</button>
+            </div>
+            
+            <div class="slider-container">
+                <span class="label-txt">Skew Left<br>(Tail Left)</span>
+                <input type="range" id="skewSlider" min="-5" max="5" step="0.1" value="0">
+                <span class="label-txt" style="text-align:right;">Skew Right<br>(Tail Right)</span>
+            </div>
+
+            <div class="stats-row">
+                <div class="stat-box">
+                    <span class="stat-title" style="color:#c0392b;">Median (Center)</span>
+                    <span id="val_median" class="stat-value" style="color:#c0392b;">--</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-title" style="color:#3498db;">Mean (Balance Point)</span>
+                    <span id="val_mean" class="stat-value" style="color:#3498db;">--</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="viz"></div>
+    </div>
+
+<script>
+    // --- Config & Layout ---
+    const totalHeight = 500;
+    const totalWidth = 800;
+    const margin = {top: 20, right: 30, bottom: 50, left: 50};
+    
+    const width = totalWidth - margin.left - margin.right;
+    const height = totalHeight - margin.top - margin.bottom;
+
+    // Layout split: 60% histogram, 10% gap, 30% boxplot
+    const histHeight = height * 0.6;
+    const gap = height * 0.1;
+    const boxPlotHeight = height * 0.3;
+    const boxTopY = histHeight + gap;
+    const boxCenterY = boxTopY + boxPlotHeight / 2;
+    const boxRectHeight = boxPlotHeight * 0.6;
+
+    // --- D3 Setup ---
+    const svg = d3.select("#viz").append("svg")
+        .attr("viewBox", `0 0 ${totalWidth} ${totalHeight}`)
+        .append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Shared X Scale (Fixed range 0-100)
+    const x = d3.scaleLinear().domain([0, 100]).range([0, width]);
+    const xAxis = d3.axisBottom(x);
+
+    // Y Scale for Histogram (Will update dynamically)
+    const yHist = d3.scaleLinear().range([histHeight, 0]);
+    const yAxisHist = d3.axisLeft(yHist).ticks(5);
+
+    // --- Create Groups & Axes ---
+    const gHist = svg.append("g");
+    gHist.append("g")
+        .attr("class", "axis")
+        .attr("transform", `translate(0, ${histHeight})`)
+        .call(xAxis);
+
+    const gYAxisHist = gHist.append("g").attr("class", "axis");
+    
+    const gBox = svg.append("g");
+    gBox.append("g")
+        .attr("class", "axis")
+        .attr("transform", `translate(0, ${totalHeight - margin.top - margin.bottom})`)
+        .call(xAxis);
+
+    // Axis Label
+    svg.append("text")
+        .attr("class", "axis-label")
+        .attr("text-anchor", "middle")
+        .attr("x", width/2)
+        .attr("y", totalHeight - margin.bottom/2)
+        .text("Data Value Scale");
+
+    svg.append("text").attr("class","axis-label").attr("x", -40).attr("y", histHeight/2).attr("transform", `rotate(-90, -40, ${histHeight/2})`).text("Frequency");
+    svg.append("text").attr("class","axis-label").attr("x", -40).attr("y", boxCenterY).text("Boxplot");
+
+
+    // --- Initialize Static Elements ---
+    
+    // Boxplot parts
+    const elRangeLine = gBox.append("line").attr("class", "whisker");
+    const elBoxRect = gBox.append("rect").attr("class", "box");
+    const elMedianLineBox = gBox.append("line").attr("class", "median-line-box");
+    const elCapL = gBox.append("line").attr("class", "cap");
+    const elCapR = gBox.append("line").attr("class", "cap");
+
+    // Overlay Lines
+    const gOverlays = svg.append("g");
+    const overlayMedian = gOverlays.append("line").attr("class", "overlay-line line-median");
+    const overlayMean = gOverlays.append("line").attr("class", "overlay-line line-mean");
+
+    // --- Data Generation (Skew Logic) ---
+    function generateSkewedData(skewFactor) {
+        const n = 500;
+        let data = [];
+        // Math.abs(skewFactor) gives the "strength" of the skew
+        // We use a Beta distribution approximation or power transform
+        
+        for(let i=0; i<n; i++) {
+            // Generate basic random number
+            let u = Math.random();
+            let val;
+            
+            // Apply transformation based on slider
+            if (skewFactor > 0.1) {
+                // Right Skew: Push data toward 0
+                // Power transform: x^p where p > 1 skews distribution to left (0), wait...
+                // To skew RIGHT (tail on right), mass is on LEFT.
+                // So we want numbers clustered near 0. 
+                // Math.pow(u, 2) clusters near 0.
+                let p = 1 + (skewFactor * 0.5); 
+                val = Math.pow(u, p);
+            } else if (skewFactor < -0.1) {
+                // Left Skew: Push data toward 1 (tail on left)
+                // Mass is on RIGHT.
+                // 1 - (1-u)^p is a common trick, or just pow(u, 1/p)
+                let p = 1 + (Math.abs(skewFactor) * 0.5);
+                val = 1 - Math.pow(u, p);
+            } else {
+                // Symmetric (Central Limit Theorem approx)
+                val = (Math.random() + Math.random() + Math.random()) / 3;
+            }
+            
+            // Add some noise so it's not perfect
+            val += (Math.random() - 0.5) * 0.05;
+            
+            // Scale to [0, 100]
+            val = val * 80 + 10; 
+            
+            // Clamp
+            if(val < 0) val = 0; 
+            if(val > 100) val = 100;
+            
+            data.push(val);
+        }
+        return data;
+    }
+
+    // --- Main Update Function ---
+    // isNewData: boolean. If true, we ignore current slider pos for data generation? 
+    // Actually, we usually want to KEEP the slider position but generate NEW random seed.
+    function update(isNewData = false) {
+        const skewVal = parseFloat(document.getElementById('skewSlider').value);
+        
+        // Update Text
+        const descLabel = document.getElementById('skewDesc');
+        if(skewVal > 2) descLabel.innerText = "Strongly Skewed Right →";
+        else if(skewVal > 0.5) descLabel.innerText = "Skewed Right";
+        else if(skewVal < -2) descLabel.innerText = "← Strongly Skewed Left";
+        else if(skewVal < -0.5) descLabel.innerText = "Skewed Left";
+        else descLabel.innerText = "Approximately Symmetric";
+
+        // Generate Data
+        // We generate fresh data every time this function runs (which happens on slider input or button click)
+        const data = generateSkewedData(skewVal).sort(d3.ascending);
+        
+        // Calculate Stats
+        const mean = d3.mean(data);
+        const median = d3.quantile(data, 0.5);
+        const q1 = d3.quantile(data, 0.25);
+        const q3 = d3.quantile(data, 0.75);
+        const min = d3.min(data); // Using actual min/max for whiskers here to show full range
+        const max = d3.max(data);
+
+        document.getElementById('val_median').innerText = median.toFixed(1);
+        document.getElementById('val_mean').innerText = mean.toFixed(1);
+
+        // --- Draw Histogram ---
+        const histogram = d3.bin().domain(x.domain()).thresholds(x.ticks(25));
+        const bins = histogram(data);
+
+        yHist.domain([0, d3.max(bins, d => d.length)]);
+        gYAxisHist.transition().duration(200).call(yAxisHist);
+
+        const bars = gHist.selectAll(".bar").data(bins);
+
+        bars.enter().append("rect")
+            .attr("class", "bar")
+            .merge(bars)
+            .transition().duration(200)
+            .attr("x", 1)
+            .attr("transform", d => `translate(${x(d.x0)}, ${yHist(d.length)})`)
+            .attr("width", d => Math.max(0, x(d.x1) - x(d.x0) - 1))
+            .attr("height", d => histHeight - yHist(d.length));
+            
+        bars.exit().remove();
+
+        // --- Draw Boxplot ---
+        const t = d3.transition().duration(200);
+
+        elBoxRect.transition(t)
+            .attr("x", x(q1))
+            .attr("y", boxCenterY - boxRectHeight/2)
+            .attr("width", x(q3) - x(q1))
+            .attr("height", boxRectHeight);
+
+        elMedianLineBox.transition(t)
+            .attr("x1", x(median)).attr("x2", x(median))
+            .attr("y1", boxCenterY - boxRectHeight/2).attr("y2", boxCenterY + boxRectHeight/2);
+
+        elRangeLine.transition(t)
+            .attr("x1", x(min)).attr("x2", x(max))
+            .attr("y1", boxCenterY).attr("y2", boxCenterY);
+
+        elCapL.transition(t)
+            .attr("x1", x(min)).attr("x2", x(min))
+            .attr("y1", boxCenterY - boxRectHeight/4).attr("y2", boxCenterY + boxRectHeight/4);
+
+        elCapR.transition(t)
+            .attr("x1", x(max)).attr("x2", x(max))
+            .attr("y1", boxCenterY - boxRectHeight/4).attr("y2", boxCenterY + boxRectHeight/4);
+
+
+        // --- Draw Overlay Lines ---
+        // Mean vs Median lines connecting the two charts
+        const bottomY = boxCenterY + boxRectHeight/2 + 20;
+
+        overlayMedian.transition(t)
+            .attr("x1", x(median)).attr("x2", x(median))
+            .attr("y1", 0).attr("y2", bottomY);
+
+        overlayMean.transition(t)
+            .attr("x1", x(mean)).attr("x2", x(mean))
+            .attr("y1", 0).attr("y2", bottomY);
+    }
+
+    // Listener for Slider
+    document.getElementById('skewSlider').addEventListener('input', () => update(false));
+
+    // Init
+    update();
+
+</script>
+</body>
+</html>
